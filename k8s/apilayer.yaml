@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apilayer
+  namespace: apilayer
+  labels:
+    app: apilayer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apilayer
+  template:
+    metadata:
+      labels:
+        app: apilayer
+    spec:
+      # Wait for postgres to accept TCP connections before starting the app.
+      # The app's startup applies db/init.sql once; if postgres isn't ready
+      # at that moment the schema apply silently fails and subsequent
+      # /products writes break. Blocking here makes the app's first attempt
+      # always succeed. busybox is ~5 MB so the cost is negligible.
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - >
+              echo "waiting for postgres + redis..." ;
+              until nc -z postgres 5432 && nc -z redis 6379; do sleep 2; done ;
+              echo "both up"
+      containers:
+        - name: apilayer
+          image: apilayer:local
+          # The image is built locally with `docker build -t apilayer:local .`
+          # and is available via the host's Docker daemon (Docker Desktop's
+          # k8s uses dockerd as the runtime). 'Never' tells the kubelet not
+          # to attempt a registry pull — without this we'd get ErrImagePull
+          # because apilayer:local doesn't exist on any registry.
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: PORT
+              value: "3000"
+            - name: PGHOST
+              value: postgres        # matches the ClusterIP Service name
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: postgres
+            - name: PGPASSWORD
+              value: postgres
+            - name: PGDATABASE
+              value: apilayer
+            - name: REDIS_HOST
+              value: redis           # matches the ClusterIP Service name
+            - name: REDIS_PORT
+              value: "6379"
+          readinessProbe:
+            # /ready reports 200 only when BOTH Postgres and Redis respond.
+            # Gives the pod up to ~2.5 minutes of dependency slowness before
+            # k8s pulls it out of the Service endpoints.
+            httpGet:
+              path: /ready
+              port: 3000
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            # /health is dependency-free — only fails if the Node process is
+            # genuinely broken, in which case a restart is the right move.
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apilayer
+  namespace: apilayer
+spec:
+  type: ClusterIP
+  selector:
+    app: apilayer
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
