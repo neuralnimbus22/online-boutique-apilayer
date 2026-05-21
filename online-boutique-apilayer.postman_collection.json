@@ -1,0 +1,352 @@
+{
+  "info": {
+    "_postman_id": "8b1fa3e0-5fa9-4d8b-9a0b-7b1a4a3e0f01",
+    "name": "Online Boutique API Layer",
+    "description": "End-to-end smoke + integration tests for the apilayer service. Runs as a story from /health through the cache-aside MISS/HIT proof and the Redis view counter, ending by deleting the product it created. Idempotent across runs because each run creates a fresh product (so cache keys for that productId are guaranteed unused).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "productId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Health (liveness)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('body is {status: ok}', function () {",
+              "    pm.expect(pm.response.json()).to.deep.equal({ status: 'ok' });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Ready (Postgres + Redis up)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/ready",
+          "host": ["{{baseUrl}}"],
+          "path": ["ready"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "const body = pm.response.json();",
+              "pm.test('postgres is up', function () {",
+              "    pm.expect(body.postgres).to.equal('up');",
+              "});",
+              "pm.test('redis is up', function () {",
+              "    pm.expect(body.redis).to.equal('up');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Create product (Postgres write)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Postman Demo Product\",\n  \"price\": 19.99\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/products",
+          "host": ["{{baseUrl}}"],
+          "path": ["products"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 201', function () {",
+              "    pm.response.to.have.status(201);",
+              "});",
+              "const body = pm.response.json();",
+              "pm.test('response has an id', function () {",
+              "    pm.expect(body.id).to.exist;",
+              "});",
+              "// Save the new id so subsequent requests can reference it.",
+              "pm.collectionVariables.set('productId', String(body.id));",
+              "console.log('saved productId =', body.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. List products (Postgres read)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/products",
+          "host": ["{{baseUrl}}"],
+          "path": ["products"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('body is an array', function () {",
+              "    pm.expect(pm.response.json()).to.be.an('array');",
+              "});",
+              "pm.test('list contains the created product', function () {",
+              "    const id = parseInt(pm.collectionVariables.get('productId'), 10);",
+              "    const list = pm.response.json();",
+              "    pm.expect(list.find(p => p.id === id)).to.exist;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Get product by id — first call (cache MISS)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/products/{{productId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["products", "{{productId}}"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('X-Cache header is MISS (first call)', function () {",
+              "    pm.expect(pm.response.headers.get('X-Cache')).to.equal('MISS');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Get product by id — second call (cache HIT)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/products/{{productId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["products", "{{productId}}"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('X-Cache header is HIT (cache-aside working)', function () {",
+              "    pm.expect(pm.response.headers.get('X-Cache')).to.equal('HIT');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Increment view counter (Redis INCR) — call 1",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/products/{{productId}}/view",
+          "host": ["{{baseUrl}}"],
+          "path": ["products", "{{productId}}", "view"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('views is a number', function () {",
+              "    pm.expect(pm.response.json().views).to.be.a('number');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Increment view counter — call 2",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/products/{{productId}}/view",
+          "host": ["{{baseUrl}}"],
+          "path": ["products", "{{productId}}", "view"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('views is a number', function () {",
+              "    pm.expect(pm.response.json().views).to.be.a('number');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "9. Increment view counter — call 3",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/products/{{productId}}/view",
+          "host": ["{{baseUrl}}"],
+          "path": ["products", "{{productId}}", "view"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('views is a number', function () {",
+              "    pm.expect(pm.response.json().views).to.be.a('number');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10. Get view count (should be 3)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/products/{{productId}}/views",
+          "host": ["{{baseUrl}}"],
+          "path": ["products", "{{productId}}", "views"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('views == 3 after three increments', function () {",
+              "    pm.expect(pm.response.json().views).to.equal(3);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11. Delete product (DB delete + cache invalidate)",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/products/{{productId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["products", "{{productId}}"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('body says deleted: true', function () {",
+              "    pm.expect(pm.response.json()).to.deep.equal({ deleted: true });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
