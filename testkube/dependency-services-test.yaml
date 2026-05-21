@@ -1,0 +1,90 @@
+kind: TestWorkflow
+apiVersion: testworkflows.testkube.io/v1
+metadata:
+  name: apilayer-dependency-services-test
+  labels:
+    testkube.io/name: DependencyServices
+spec:
+  content:
+    git:
+      uri: https://github.com/neuralnimbus22/online-boutique-apilayer
+      revision: main
+  services:
+    postgres:
+      timeout: 3m
+      image: postgres:16
+      env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: postgres
+        - name: POSTGRES_DB
+          value: apilayer
+      readinessProbe:
+        tcpSocket:
+          port: 5432
+        periodSeconds: 2
+        failureThreshold: 30
+    redis:
+      timeout: 3m
+      image: redis:7
+      readinessProbe:
+        tcpSocket:
+          port: 6379
+        periodSeconds: 2
+        failureThreshold: 30
+  container:
+    image: node:20
+    workingDir: /data/repo
+  steps:
+    - name: Run integration tests against ephemeral Postgres + Redis
+      run:
+        env:
+          - name: PGHOST
+            value: '{{ services.postgres.0.ip }}'
+          - name: PGPORT
+            value: "5432"
+          - name: PGUSER
+            value: postgres
+          - name: PGPASSWORD
+            value: postgres
+          - name: PGDATABASE
+            value: apilayer
+          - name: REDIS_HOST
+            value: '{{ services.redis.0.ip }}'
+          - name: REDIS_PORT
+            value: "6379"
+          - name: API_URL
+            value: http://localhost:3000
+        shell: |
+          set -e
+          echo "=== Postgres is at {{ services.postgres.0.ip }}:5432 ==="
+          echo "=== Redis is at {{ services.redis.0.ip }}:6379 ==="
+          echo ""
+          echo "=== Installing app dependencies ==="
+          npm ci
+          echo ""
+          echo "=== Starting the API app in the background ==="
+          node src/server.js &
+          APP_PID=$!
+          echo "App started with PID $APP_PID"
+          echo ""
+          echo "=== Waiting for the app to be ready ==="
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/ready >/dev/null 2>&1; then
+              echo "App is ready"
+              break
+            fi
+            echo "waiting for app... ($i)"
+            sleep 2
+          done
+          echo ""
+          echo "=== Running the test suite ==="
+          set +e
+          npm test
+          TEST_EXIT=$?
+          set -e
+          echo ""
+          echo "=== Tests done (exit $TEST_EXIT), stopping app ==="
+          kill $APP_PID 2>/dev/null || true
+          exit $TEST_EXIT
